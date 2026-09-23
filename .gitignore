@@ -1,0 +1,9 @@
+data/
+*.csv
+ml-25m/
+ml-25m.zip
+__pycache__/
+.venv/
+*.pyc
+.DS_Store
+Thumbs.db

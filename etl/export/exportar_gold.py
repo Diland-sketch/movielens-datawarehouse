@@ -10,6 +10,7 @@ Requisitos:  pip install psycopg2-binary   (y para --sheets: pip install gspread
 import argparse
 import csv
 import datetime as dt
+import time
 import decimal
 import getpass
 import os
@@ -96,20 +97,37 @@ def a_csv(nombre, columnas, filas):
     return ruta
 
 
+def con_reintentos(fn, intentos=5, espera=3):
+    from requests.exceptions import RequestException
+    from gspread.exceptions import APIError
+    for n in range(1, intentos + 1):
+        try:
+            return fn()
+        except (RequestException, APIError) as e:
+            if n == intentos:
+                raise
+            print(f"    reintento {n}/{intentos - 1} tras {type(e).__name__}")
+            time.sleep(espera * n)
+
+
 def a_sheets(nombre, columnas, filas):
     import gspread  # import tardío: solo se necesita con --sheets
-    cred = os.environ["GOOGLE_APPLICATION_CREDENTIALS"]   # JSON de la cuenta de servicio
-    sheet_id = os.environ["SHEET_ID"]                     # id del Google Sheet compartido con esa cuenta
-    sh = gspread.service_account(filename=cred).open_by_key(sheet_id)
+    cred = os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
+    sheet_id = os.environ["SHEET_ID"]
+    gc = gspread.service_account(filename=cred, http_client=gspread.BackOffHTTPClient)
+    sh = con_reintentos(lambda: gc.open_by_key(sheet_id))
     try:
-        ws = sh.worksheet(nombre)
+        ws = con_reintentos(lambda: sh.worksheet(nombre))
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=nombre, rows=len(filas) + 1, cols=len(columnas))
-    ws.clear()
-    ws.resize(rows=len(filas) + 1, cols=len(columnas))
+        ws = con_reintentos(lambda: sh.add_worksheet(title=nombre, rows=len(filas) + 1, cols=len(columnas)))
+    con_reintentos(ws.clear)
+    con_reintentos(lambda: ws.resize(rows=len(filas) + 1, cols=len(columnas)))
     datos = [columnas] + [[serializar(v) for v in fila] for fila in filas]
-    for i in range(0, len(datos), 5000):
-        ws.update(range_name=f"A{i + 1}", values=datos[i:i + 5000], value_input_option="RAW")
+    LOTE = 2000
+    for i in range(0, len(datos), LOTE):
+        lote = datos[i:i + LOTE]
+        con_reintentos(lambda: ws.update(range_name=f"A{i + 1}", values=lote, value_input_option="RAW"))
+        time.sleep(1)  # evita saturar la cuota de escrituras por minuto
 
 
 def main():
@@ -138,8 +156,12 @@ def main():
                 if len(filas) > MAX_FILAS_SHEETS:
                     estado += " (Sheets omitido: demasiadas filas)"
                 else:
-                    a_sheets(nombre, columnas, filas)
-                    estado += " + Sheets"
+                    try:
+                        a_sheets(nombre, columnas, filas)
+                        estado += " + Sheets"
+                    except Exception as e:
+                        estado += f" (Sheets FALLÓ: {type(e).__name__})"
+                        print(f"  [SHEETS FALLÓ] {nombre}: {e}")
             resumen.append((nombre, len(filas), estado))
             print(f"  {nombre}: {len(filas)} filas -> {ruta.name}")
         print("\nResumen:")

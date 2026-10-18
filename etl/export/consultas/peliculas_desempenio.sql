@@ -1,0 +1,1 @@
+SELECT * FROM gold.v_pelicula_desempenio WHERE total_valoraciones >= 100;
